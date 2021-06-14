@@ -1,104 +1,88 @@
 import os
-import gym
+import sys
 import time
-import gym_super_mario_bros
+sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname('__file__'))))
+
 import threading
-import random
 import numpy as np
 import tensorflow as tf
 
-from skimage.color import rgb2gray
-from skimage.transform import resize
-from nes_py.wrappers import JoypadSpace
-from gym_super_mario_bros import actions
-
-
+from tensorflow.keras.initializers import RandomUniform
 from tensorflow.compat.v1.train import AdamOptimizer
-from tensorflow.keras.layers import Conv2D, Flatten, Dense
+from tensorflow.keras.layers import Flatten, Dense,Conv2D
+
+from nes_py.wrappers import JoypadSpace
+from environment.env_supermario import SuperMarioEnv
+from environment.actions import SIMPLE_MOVEMENT
 
 # 글로벌 변수
 global episode, score_avg, score_max
 episode, score_avg, score_max = 0, 0, 0
-num_episode = 8000
+num_episode = 10000
 
 # ActorCritic 인공신경망
 class ActorCritic(tf.keras.Model):
-    def __init__(self, action_size, state_size):
+    def __init__(self, action_size,state_size = (1,13,16,4)):
         super(ActorCritic, self).__init__()
-
-        self.conv1 = Conv2D(32, (8, 8), strides=(4, 4), activation='relu',
-                            input_shape=state_size)
-        self.conv2 = Conv2D(64, (4, 4), strides=(2, 2), activation='relu')
-        self.conv3 = Conv2D(64, (3, 3), strides=(1, 1), activation='relu')
+        #정책신경망과 가치신경망의 모델을 공유
+        self.conv1 = Conv2D(8, (4, 4), strides=(2, 2), activation='relu', input_shape=state_size)
+        self.conv2 = Conv2D(16, (3, 3), strides=(1, 1), activation='relu')
+        self.conv3 = Conv2D(16, (2, 2), strides=(1, 1), activation='relu')
         self.flatten = Flatten()
         self.shared_fc = Dense(512, activation='relu')
-
-        self.policy = Dense(action_size, activation='linear')
-        self.value = Dense(1, activation='linear')
+        self.policy = Dense(action_size,activation = 'linear')
+        self.value = Dense(1,activation = 'linear')
 
     def call(self, x):
         x = self.conv1(x)
         x = self.conv2(x)
         x = self.conv3(x)
-        x = self.flatten(x)
         x = self.shared_fc(x)
-
         policy = self.policy(x)
         value = self.value(x)
+
         return policy, value
 
 #글로벌 신경망
 class A3CAgent():
-    def __init__(self, action_size, env_name):
-        self.env_name = env_name
-        self.state_size = (84, 84, 4)
+    def __init__(self, action_size):
+        self.state_size = (1,13, 16, 4)
         self.action_size = action_size
-        # A3C 하이퍼파라미터
         self.discount_factor = 0.99
         self.lr = 1e-4
-        # 쓰레드의 갯수
-        self.threads = 16
+        self.threads = 8
 
-        # 글로벌 인공신경망 생성
-        self.global_model = ActorCritic(self.action_size, self.state_size)
-        # 글로벌 인공신경망의 가중치 초기화
+        self.global_model = ActorCritic(self.action_size)
         self.global_model.build(tf.TensorShape((None, *self.state_size)))
 
-        # 인공신경망 업데이트하는 옵티마이저 함수 생성
         self.optimizer = AdamOptimizer(self.lr, use_locking=True)
 
-        # 텐서보드 설정
-        self.writer = tf.summary.create_file_writer('summary/mario_a3c')
-        # 학습된 글로벌신경망 모델을 저장할 경로 설정
-        self.model_path = os.path.join(os.getcwd(), 'save_model', 'model')
+        self.writer = tf.summary.create_file_writer('summary/newEnvA3C')
+        self.model_path = os.path.join(os.getcwd(), 'save_model_newEnvA3C', 'model')
 
     # 쓰레드를 만들어 학습을 하는 함수
     def train(self):
         # 쓰레드 수 만큼 Runner 클래스 생성
         runners = [Runner(self.action_size, self.state_size,
                           self.global_model, self.optimizer,
-                          self.discount_factor, self.env_name,
+                          self.discount_factor,
                           self.writer) for i in range(self.threads)]
 
         for i, runner in enumerate(runners):
-            print("Start worker #{:d}".format(i))
             runner.start()
 
-        # 3분 (180초)에 한 번씩 모델을 저장
         while True:
             self.global_model.save_weights(self.model_path, save_format="tf")
-            time.sleep(180)
+            time.sleep(600)
 
 
-# 액터러너 클래스 (쓰레드)
 class Runner(threading.Thread):
     global_episode = 0
 
     def __init__(self, action_size, state_size, global_model,
-                 optimizer, discount_factor, env_name, writer):
+                 optimizer, discount_factor, writer):
         threading.Thread.__init__(self)
 
-        # A3CAgent 클래스에서 넘겨준 하이퍼 파라미터 설정
         self.action_size = action_size
         self.state_size = state_size
         self.global_model = global_model
@@ -108,9 +92,9 @@ class Runner(threading.Thread):
         self.states, self.actions, self.rewards = [], [], []
 
         # 환경, 로컬신경망, 텐서보드 생성
-        self.local_model = ActorCritic(action_size, state_size)
-        self.env = gym_super_mario_bros.make(env_name)
-        self.env = JoypadSpace(self.env, actions.SIMPLE_MOVEMENT)
+        self.local_model = ActorCritic(action_size)
+        self.env = SuperMarioEnv()
+        self.env = JoypadSpace(self.env, SIMPLE_MOVEMENT)
         self.writer = writer
 
         # 학습 정보를 기록할 변수
@@ -150,7 +134,7 @@ class Runner(threading.Thread):
         running_add = 0
 
         if not done:
-            # value function
+            # 가치함수
             last_state = np.float32(self.states[-1] / 255.)
             running_add = self.local_model(last_state)[-1][0].numpy()
 
@@ -166,7 +150,7 @@ class Runner(threading.Thread):
         discounted_prediction = tf.convert_to_tensor(discounted_prediction[:, None],
                                                      dtype=tf.float32)
 
-        states = np.zeros((len(self.states), 84, 84, 4))
+        states = np.zeros((len(self.states), 13, 16, 4))
 
         for i in range(len(self.states)):
             states[i] = self.states[i]
@@ -203,6 +187,8 @@ class Runner(threading.Thread):
             total_loss = self.compute_loss(done)
 
         grads = tape.gradient(total_loss, local_params)
+        grads, _ = tf.clip_by_global_norm(grads,40.0)
+
         self.optimizer.apply_gradients(zip(grads, global_params))
         self.local_model.set_weights(self.global_model.get_weights())
         self.states, self.actions, self.rewards = [], [], []
@@ -216,13 +202,10 @@ class Runner(threading.Thread):
             done = False
             dead = False
 
-            score, start_life = 0, 2
-            observe = self.env.reset()
-
-            # 프레임을 전처리 한 후 4개의 상태를 쌓아서 입력값으로 사용.
-            state = pre_processing(observe)
+            score = 0
+            state = self.env.reset()
             history = np.stack([state, state, state, state], axis=2)
-            history = np.reshape([history], (1, 84, 84, 4))
+            history = np.reshape([history], (1, 13, 16, 4))
 
             while not done:
                 step += 1
@@ -230,32 +213,18 @@ class Runner(threading.Thread):
 
                 # 정책 확률에 따라 행동을 선택
                 action, policy = self.get_action(history)
-                if dead:
-                    action, dead = 0, False
+                next_state, reward, done, info = self.env.step(action)
 
-                observe, reward, done, info = self.env.step(action)
-
-                next_state = pre_processing(observe)
-                next_state = np.reshape([next_state], (1, 84, 84, 1))
+                next_state = np.reshape([next_state], (1, 13, 16, 1))
                 next_history = np.append(next_state, history[:, :, :, :3], axis=3)
 
                 self.avg_p_max += np.amax(policy.numpy())
-
-                if start_life > info['life']:
-                    dead = True
-                    start_life = info['life']
 
                 score += reward
 
                 # 샘플을 저장
                 self.append_sample(history, action, reward)
-
-                if dead:
-                    history = np.stack((next_state, next_state,
-                                        next_state, next_state), axis=2)
-                    history = np.reshape([history], (1, 84, 84, 4))
-                else:
-                    history = next_history
+                history = next_history
 
                 # 에피소드가 끝나거나 최대 타임스텝 수에 도달하면 학습을 진행
                 if self.t >= self.t_max or done:
@@ -278,14 +247,6 @@ class Runner(threading.Thread):
                     self.avg_p_max = 0
                     step = 0
 
-
-# 학습속도를 높이기 위해 흑백화면으로 전처리
-def pre_processing(observe):
-    processed_observe = np.uint8(
-        resize(rgb2gray(observe), (84, 84), mode='constant') * 255)
-    return processed_observe
-
-
 if __name__ == "__main__":
-    global_agent = A3CAgent(action_size=len(actions.SIMPLE_MOVEMENT), env_name="SuperMarioBros-v0")
+    global_agent = A3CAgent(action_size=len(SIMPLE_MOVEMENT))
     global_agent.train()
