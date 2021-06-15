@@ -37,6 +37,7 @@ class ActorCritic(tf.keras.Model):
         x = self.conv1(x)
         x = self.conv2(x)
         x = self.conv3(x)
+        x = self.flatten
         x = self.shared_fc(x)
         policy = self.policy(x)
         value = self.value(x)

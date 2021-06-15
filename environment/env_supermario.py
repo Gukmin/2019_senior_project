@@ -22,7 +22,8 @@ RAM_MAP = {
     'Enemy_Drawn' : (0x000F,0x0013),
     'Enemy_Pos' : (0x04B0,0x04C4)
 }
-
+PIXEL_WIDTH = 16
+PIXEL_HEIGHT = 16
 #https://pypi.org/project/nes-py/
 #https://datacrystal.romhacking.net/wiki/Super_Mario_Bros.:RAM_map
 
@@ -37,6 +38,8 @@ class SuperMarioEnv(NESEnv):
         self.prev_time = 0
         self.prev_x = 0
         self.screen_offset = 0
+        self.screen_idx = 0
+        self.gap = 0
         self.reset()
         self.make_single_stage()
         self._skip_start_screen()
@@ -71,14 +74,14 @@ class SuperMarioEnv(NESEnv):
         enemy_pos = self.ram[RAM_MAP['Enemy_Pos'][0]:RAM_MAP['Enemy_Pos'][1]]
         for i in range(5):
             if enemy_drawn[i] == 1:
-                x = (enemy_pos[i*4])//16
-                y = (enemy_pos[i*4+1])//16-2
+                x = (enemy_pos[i*4]+self.gap+PIXEL_WIDTH//2)//PIXEL_WIDTH
+                y = (enemy_pos[i*4+1])//PIXEL_HEIGHT-2
                 if y<0 or y>=13 or x<0 or x>=16:
                     continue
                 else :
                     observation[y][x] = 85
-        mario_x = self.screen_x//16
-        mario_y = (self.cur_y-1)//16
+        mario_x = (self.screen_x+self.gap+PIXEL_WIDTH//2)//PIXEL_WIDTH
+        mario_y = (self.cur_y-1)//PIXEL_HEIGHT
         if mario_y >=0 and mario_y< 13:
             observation[mario_y][mario_x] = 190
         return observation
@@ -110,7 +113,7 @@ class SuperMarioEnv(NESEnv):
     def _did_reset(self):
         """Handle any RAM hacking after a reset occurs."""
         # use this method to access the RAM of the emulator 
-        # and perform setup for each episode. 
+        # and perform setup for each episode.
         # the method returns None
         self.prev_time = self.cur_time
         self.prev_x = self.cur_x
@@ -129,7 +132,9 @@ class SuperMarioEnv(NESEnv):
         """
         self.prev_x = self.cur_x
         self.prev_time = self.cur_time
-        self.screen_offset = ((self.cur_x+15 - self.screen_x)//16)%32
+        self.screen_idx = (self.cur_x-self.screen_x)//PIXEL_WIDTH
+        self.screen_offset = self.screen_idx%32
+        self.gap = self.cur_x - (self.screen_x+self.screen_idx*PIXEL_WIDTH)
         if done:
             return
         if self.read_byte(RAM_MAP['State']) == 0x000B or self.read_byte(RAM_MAP['Vertical']) > 1:
@@ -138,11 +143,10 @@ class SuperMarioEnv(NESEnv):
 
     def _get_reward(self):
         """Return the reward after a step occurs."""
-        #+ 완료, x좌표, -죽음, 시간
-        x_reward = (self.cur_x - self.prev_x)*((self.cur_x//1000)+1)
-        reward = x_reward + self.is_complete * 10
+        x_reward = (self.cur_x - self.prev_x)#*((self.cur_x//1000)+1)
+        reward = x_reward + self.is_complete * 10u
         penalty = self.cur_time - self.prev_time
-        penalty += self.is_dead*-30
+        penalty += self.is_dead*-10
         return reward - penalty
 
     def _get_done(self):

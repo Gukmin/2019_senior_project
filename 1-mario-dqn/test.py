@@ -5,10 +5,8 @@ import random
 import tensorflow as tf
 import numpy as np
 
-from collections import deque
 from nes_py.wrappers import JoypadSpace
 
-from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.layers import Dense, Flatten,Conv2D
 
 from environment.env_supermario import SuperMarioEnv
@@ -38,7 +36,7 @@ class DQN(tf.keras.Model):
         return q
 
 class DQNAgent:
-    def __init__(self, action_size, state_size = (1, 13, 16 ,4), model_path,render = True):
+    def __init__(self, action_size,model_path, state_size = (1, 13, 16 ,4),render = True):
         self.render = render
 
         # 상태와 행동의 크기 정의
@@ -78,8 +76,9 @@ class Window(QMainWindow):
     def Main(self):
         env = SuperMarioEnv()
         env = JoypadSpace(env,SIMPLE_MOVEMENT)
-        model_path = './save_model_newEnvDQN'
-        agent = DQNAgent(action_size=len(SIMPLE_MOVEMENT),render = self.game_render)
+        model_path = './save_model_newEnvDQN/model'
+        agent = DQNAgent(action_size=len(SIMPLE_MOVEMENT),
+                         model_path = model_path,render = self.game_render)
         num_episode = 10
         for e in range(num_episode):
             done = False
